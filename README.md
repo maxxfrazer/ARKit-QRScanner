@@ -13,7 +13,7 @@ Example use (not suggested to run every frame as in example though):
 func session(_ session: ARSession, didUpdate frame: ARFrame) {
 	// background thread improves the lag a bit
 	DispatchQueue.global(qos: .background).async {
-		let (qrCodes, pos) = findQR(in: frame)
+		let (qrCodes, pos) = QRScanner.findQR(in: frame)
 		for code in qrCodes {
 			print(code.messageString ?? "no message found")
 		}
