@@ -24,75 +24,107 @@ public struct QRResponse {
 
 
 public struct QRScanner {
+    private struct CornersObj {
+      var bottomLeft = simd_float3.zero
+      var bottomRight = simd_float3.zero
+      var topLeft = simd_float3.zero
+      var topRight = simd_float3.zero
+    }
+    private struct CornerCGPoints {
+      var bottomLeft: CGPoint
+      var bottomRight: CGPoint
+      var topLeft: CGPoint
+      var topRight: CGPoint
+      var center: CGPoint
+
+      init(from points: [CGPoint]) {
+        bottomLeft = points[0]
+        bottomRight = points[1]
+        topLeft = points[3]
+        topRight = points[2]
+        center = points[8]
+      }
+    }
 	/// Return a list of QR Codes and transform, size
 	///
 	/// - Parameter frame: ARFrame provided by ARKit
     /// - Parameter orientation: UIInterfaceOrientation, ARSCNView's oriention
     /// - Parameter viewSize: ARSCNView's size
 	/// - Returns: A QRResponse array containing the estimated transform, feature and accuracy
-    @available(iOS 12.0, *)
     public static func findQRTransform(in frame: ARFrame, orientation: UIInterfaceOrientation,viewSize: CGSize) -> [QRResponse] {
         let features = QRScanner.findQR(in: frame.capturedImage)
         
         let (factor,imageWidth,imageHeight) = scaleFactor(image:frame.capturedImage, aspectFillIn: viewSize)
         
-        return features.reduce(into: [QRResponse]()) { (responses, feature) in
+        return features.compactMap { (feature) -> QRResponse? in
             let cgpointsInImage = generateNinePointsInImage(from: feature)
             // convert to View coor
             let cgpointsInView = generateNinePointsInView(from: cgpointsInImage, imageWidth: imageWidth, imageHeight: imageHeight, scaleFactor: factor, viewSize: viewSize)
             
-            if cgpointsInView.count < 9 {return}
+            if cgpointsInView.count < 9 {return nil}
             
-            let bottomLeftInView = cgpointsInView[0]
-            let bottomRightInView = cgpointsInView[1]
-            let topRightInView = cgpointsInView[2]
-            let topLeftInView = cgpointsInView[3]
-            let centerInView = cgpointsInView[8]
-            
-            var bottomLeftRough = simd_float3(repeating: 0)
-            var bottomRightRough = simd_float3(repeating: 0)
-            var topRightRough = simd_float3(repeating: 0)
-            var topLeftRough = simd_float3(repeating: 0)
-            
-            let points = cgpointsInImage.reduce(into: [simd_float3]()) { (points, cgpoint) in
-                let newPoint = CGPoint(x: cgpoint.x/imageWidth, y: (imageHeight-cgpoint.y)/imageHeight);
-                let hitResult = frame.hitTest(newPoint,
-                                              types: [.estimatedVerticalPlane, .estimatedHorizontalPlane, .existingPlane, .featurePoint, .existingPlaneUsingExtent, .existingPlaneUsingGeometry])
-                
-                // TODO: right now, just use the first result and ignore their type;
-                // next step, we can put same type of results in different groups, to get different planes, then choose the best plane.
-                if let worldT = hitResult.first?.worldTransform {
-                    let position3D = simd_float3(worldT.columns.3.x, worldT.columns.3.y, worldT.columns.3.z)
-                    points.append(position3D)
-                    
-                    if cgpoint == feature.bottomLeft {
-                        bottomLeftRough = position3D
-                    }
-                    if cgpoint == feature.bottomRight {
-                        bottomRightRough = position3D
-                    }
-                    if cgpoint == feature.topRight {
-                        topRightRough = position3D
-                    }
-                    if cgpoint == feature.topLeft {
-                        topLeftRough = position3D
-                    }
-                    
-                }
+            let cornersInView = CornerCGPoints(from: cgpointsInView)
+            var roughCorners = CornersObj()
+
+            let points = cgpointsInImage.compactMap { (point) -> simd_float3? in
+              let newPoint = CGPoint(x: point.x/imageWidth, y: (imageHeight-point.y)/imageHeight);
+              let hitResult = frame.hitTest(newPoint,
+                                            types: [.estimatedVerticalPlane, .estimatedHorizontalPlane, .existingPlane, .featurePoint, .existingPlaneUsingExtent, .existingPlaneUsingGeometry])
+
+              // TODO: right now, just use the first result and ignore their type;
+              // next step, we can put same type of results in different groups, to get different planes, then choose the best plane.
+              if let worldT = hitResult.first?.worldTransform {
+                  let position3D = simd_float3(worldT.columns.3.x, worldT.columns.3.y, worldT.columns.3.z)
+
+                  if point == feature.bottomLeft {
+                    roughCorners.bottomLeft = position3D
+                  } else if point == feature.bottomRight {
+                    roughCorners.bottomRight = position3D
+                  } else if point == feature.topRight {
+                    roughCorners.topRight = position3D
+                  } else if point == feature.topLeft {
+                    roughCorners.topLeft = position3D
+                  }
+                return position3D
+              }
+              return nil
             }
-            if points.count < 4 {return}
+            if points.count < 4 {return nil}
             
             var planeT = computeBestFitPlaneInXZ(points: points)
             let positionRough = simd_float3(planeT.columns.3.x, planeT.columns.3.y, planeT.columns.3.z)
             
             // unproject the screen point to 3D plane, to get accruacy size and position
             // The plane is the xz-plane of the local coordinate space this transform defines.
-            let bottomLeft = frame.camera.unprojectPoint(bottomLeftInView, ontoPlane: planeT, orientation: orientation, viewportSize: viewSize) ?? bottomLeftRough
-            let bottomRight = frame.camera.unprojectPoint(bottomRightInView, ontoPlane: planeT, orientation: orientation, viewportSize: viewSize) ?? bottomRightRough
-            let topRight = frame.camera.unprojectPoint(topRightInView, ontoPlane: planeT, orientation: orientation, viewportSize: viewSize) ?? topRightRough
-            let topLeft = frame.camera.unprojectPoint(topLeftInView, ontoPlane: planeT, orientation: orientation, viewportSize: viewSize) ?? topLeftRough
+            let bottomLeft = frame.camera.unprojectPoint(
+              cornersInView.bottomLeft,
+              ontoPlane: planeT,
+              orientation: orientation,
+              viewportSize: viewSize
+            ) ?? roughCorners.bottomLeft
+            let bottomRight = frame.camera.unprojectPoint(
+              cornersInView.bottomRight,
+              ontoPlane: planeT,
+              orientation: orientation,
+              viewportSize: viewSize
+            ) ?? roughCorners.bottomRight
+            let topRight = frame.camera.unprojectPoint(
+              cornersInView.topRight,
+              ontoPlane: planeT,
+              orientation: orientation,
+              viewportSize: viewSize
+            ) ?? roughCorners.topRight
+            let topLeft = frame.camera.unprojectPoint(
+              cornersInView.topLeft,
+              ontoPlane: planeT,
+              orientation: orientation,
+              viewportSize: viewSize
+            ) ?? roughCorners.topLeft
             // center
-            let position = frame.camera.unprojectPoint(centerInView, ontoPlane: planeT, orientation: orientation, viewportSize: viewSize) ?? positionRough
+            let position = frame.camera.unprojectPoint(
+              cornersInView.center, ontoPlane: planeT, orientation: orientation,
+              viewportSize: viewSize
+            ) ?? positionRough
             planeT.columns.3 = simd_float4(position, 1)
             
             let size = CGSize(width: CGFloat(simd_distance(bottomLeft, bottomRight) * 0.5 + simd_distance(topLeft, topRight) * 0.5), height: CGFloat(simd_distance(bottomLeft, topLeft) * 0.5 + simd_distance(topRight, bottomRight) * 0.5))
@@ -100,14 +132,13 @@ public struct QRScanner {
             
             let response = QRResponse(feature: feature, position: position, transform: planeT, accuracy: .transformAndSizeApprox, size: size)
             
-            responses.append(response)
+            return response
         }
     }
     
     /// Return a list of QR Codes and transform, size
     /// - Parameter view: ARSCNView provided by ARKit
     /// - Returns: A QRResponse array containing the estimated transform, feature and accuracy
-    @available(iOS 12.0, *)
     public static func findQRTransform(view:ARSCNView) -> [QRResponse] {
         guard let frame = view.session.currentFrame else { return [QRResponse]() }
         
