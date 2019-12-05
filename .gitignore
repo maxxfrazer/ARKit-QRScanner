@@ -39,6 +39,8 @@ playground.xcworkspace
 # Package.pins
 # Package.resolved
 .build/
+.swiftpm/
+QRScanner.xcodeproj
 
 # CocoaPods
 #
